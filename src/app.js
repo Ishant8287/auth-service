@@ -1,5 +1,6 @@
 const express = require("express");
 const AppError = require("./utils/AppError");
+const cookieParser = require("cookie-parser");
 
 //Routes -> import
 const authRoutes = require("./routes/authRoutes");

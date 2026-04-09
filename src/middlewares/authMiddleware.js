@@ -3,6 +3,7 @@ const AppError = require("../utils/AppError");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
+//protect middlware
 exports.protect = asyncHandler(async (req, res, next) => {
   let token;
 
@@ -24,8 +25,10 @@ exports.protect = asyncHandler(async (req, res, next) => {
     throw new AppError("Invalid or expired token", 401);
   }
 
+  //find user with that id but make password undefined
   const user = await User.findById(decoded.id).select("-password");
 
+  //If not found
   if (!user) {
     throw new AppError("User no longer exists", 401);
   }
@@ -34,3 +37,15 @@ exports.protect = asyncHandler(async (req, res, next) => {
 
   next();
 });
+
+//restrict Middleware
+exports.restrictTo = (...roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return next(
+        new AppError("You don't have permission to perfor, this action", 403),
+      );
+    }
+    next();
+  };
+};
