@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema(
 
     password: {
       type: String,
-      required: [true, "password is required"],
+      // required: [true, "password is required"],
       minlength: [8, "password must be at least 8 characters long"],
       trim: true,
       select: false,
@@ -42,6 +42,9 @@ const userSchema = new mongoose.Schema(
     passwordResetExpires: {
       type: Date,
       default: undefined,
+    },
+    googleId: {
+      type: String,
     },
   },
   {

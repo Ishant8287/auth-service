@@ -13,6 +13,7 @@ app.set("trust proxy", true);
 
 //Body Parser
 app.use(express.json());
+app.use(cookieParser());
 
 //Routes (use here)
 app.use("/api/auth", authRoutes);

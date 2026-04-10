@@ -8,6 +8,8 @@ const {
   deleteUser,
   forgotPassword,
   resetPassword,
+  googleAuthController,
+  setPassword,
 } = require("../controllers/authController");
 const { protect, restrictTo } = require("../middlewares/authMiddleware");
 const router = express.Router();
@@ -30,5 +32,11 @@ router.post("/forgot-password", forgotPassword);
 
 //reset pass
 router.post("/reset-password/:token", resetPassword);
+
+//google router
+router.post("/google", googleAuthController);
+
+//setPassword
+router.post("/set-password",protect, setPassword);
 
 module.exports = router;
