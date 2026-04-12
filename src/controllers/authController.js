@@ -3,9 +3,8 @@ const AppError = require("../utils/AppError");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
+const crypto = require("crypto"); // built-in Node module
 const { OAuth2Client } = require("google-auth-library");
-
 const {
   generateAccessToken,
   generateRefreshToken,
@@ -13,10 +12,18 @@ const {
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// Helper: set refresh token cookie
+const setRefreshCookie = (res, token) => {
+  res.cookie("refreshToken", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  });
+};
+
 /*
-SIGNUP CONTROLLER
-  • Creates a new user
-  • Password hashing handled via schema pre-save hook
+SIGNUP
 */
 exports.signUp = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
@@ -31,7 +38,6 @@ exports.signUp = asyncHandler(async (req, res) => {
   }
 
   const newUser = await User.create({ name, email, password });
-
   newUser.password = undefined;
 
   return res.status(201).json({
@@ -41,10 +47,7 @@ exports.signUp = asyncHandler(async (req, res) => {
 });
 
 /*
-LOGIN CONTROLLER
-  • Verifies credentials
-  • Generates access + refresh tokens
-  • Stores refresh token in DB and cookie
+LOGIN
 */
 exports.login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -56,10 +59,9 @@ exports.login = asyncHandler(async (req, res) => {
   const user = await User.findOne({ email }).select("+password");
 
   if (!user) {
-    throw new AppError("Invalid credentials", 401); // don't reveal "user not found"
+    throw new AppError("Invalid credentials", 401);
   }
 
-  // Block login if user is Google-only (no password set)
   if (!user.password) {
     throw new AppError("Please login using Google", 400);
   }
@@ -75,12 +77,7 @@ exports.login = asyncHandler(async (req, res) => {
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
 
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-  });
+  setRefreshCookie(res, refreshToken);
 
   return res.status(200).json({
     status: "success",
@@ -90,7 +87,6 @@ exports.login = asyncHandler(async (req, res) => {
 
 /*
 GET CURRENT USER
-  • Requires protect middleware
 */
 exports.getMe = asyncHandler(async (req, res) => {
   return res.status(200).json({
@@ -101,31 +97,36 @@ exports.getMe = asyncHandler(async (req, res) => {
 
 /*
 REFRESH ACCESS TOKEN
-  • Uses refresh token from cookies
-  • Verifies and issues new access token
 */
 exports.refreshAccessToken = asyncHandler(async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
+  const incomingRefreshToken = req.cookies.refreshToken;
 
-  if (!refreshToken) {
+  if (!incomingRefreshToken) {
     throw new AppError("Refresh token required", 401);
   }
 
   let decoded;
-
   try {
-    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    decoded = jwt.verify(incomingRefreshToken, process.env.JWT_REFRESH_SECRET);
   } catch (err) {
     throw new AppError("Invalid or expired refresh token", 401);
   }
 
-  const user = await User.findById(decoded.id);
+  const user = await User.findById(decoded.id).select("+refreshToken");
 
-  if (!user || user.refreshToken !== refreshToken) {
+  if (!user || user.refreshToken !== incomingRefreshToken) {
     throw new AppError("Invalid refresh token", 401);
   }
 
+  // Rotate: generate new access + refresh tokens
   const newAccessToken = generateAccessToken(user._id);
+  const newRefreshToken = generateRefreshToken(user._id);
+
+  // Invalidate old refresh token, store new one
+  user.refreshToken = newRefreshToken;
+  await user.save({ validateBeforeSave: false });
+
+  setRefreshCookie(res, newRefreshToken);
 
   return res.status(200).json({
     status: "success",
@@ -134,9 +135,7 @@ exports.refreshAccessToken = asyncHandler(async (req, res) => {
 });
 
 /*
-GOOGLE AUTH CONTROLLER
-  • Handles login/signup via Google
-  • Links account if user already exists with same email
+GOOGLE AUTH
 */
 exports.googleAuthController = asyncHandler(async (req, res) => {
   const { idToken } = req.body;
@@ -145,7 +144,6 @@ exports.googleAuthController = asyncHandler(async (req, res) => {
     throw new AppError("Google ID token is required", 400);
   }
 
-  // Verify the token with Google — don't trust client-sent email/googleId directly
   let payload;
   try {
     const ticket = await googleClient.verifyIdToken({
@@ -176,12 +174,7 @@ exports.googleAuthController = asyncHandler(async (req, res) => {
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
 
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-  });
+  setRefreshCookie(res, refreshToken);
 
   return res.status(200).json({
     status: "success",
@@ -190,8 +183,7 @@ exports.googleAuthController = asyncHandler(async (req, res) => {
 });
 
 /*
-LOGOUT CONTROLLER
-  • Clears refresh token from DB and cookie
+LOGOUT
 */
 exports.logout = asyncHandler(async (req, res) => {
   const user = req.user;
@@ -208,8 +200,7 @@ exports.logout = asyncHandler(async (req, res) => {
 });
 
 /*
-SET PASSWORD (FOR GOOGLE USERS)
-  • Allows Google-authenticated users to add a password to their account
+SET PASSWORD (Google users adding a password)
 */
 exports.setPassword = asyncHandler(async (req, res) => {
   const { password } = req.body;
@@ -225,7 +216,7 @@ exports.setPassword = asyncHandler(async (req, res) => {
   }
 
   user.password = password;
-  await user.save(); // triggers pre-save hash hook
+  await user.save(); // triggers pre-save hash
 
   return res.status(200).json({
     status: "success",
@@ -234,7 +225,7 @@ exports.setPassword = asyncHandler(async (req, res) => {
 });
 
 /*
-DELETE USER (ADMIN ONLY)
+DELETE USER (Admin only)
 */
 exports.deleteUser = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -244,7 +235,6 @@ exports.deleteUser = asyncHandler(async (req, res) => {
   }
 
   const user = await User.findById(id);
-
   if (!user) {
     throw new AppError("User not found", 404);
   }
@@ -259,8 +249,6 @@ exports.deleteUser = asyncHandler(async (req, res) => {
 
 /*
 FORGOT PASSWORD
-  • Generates a reset token and stores hashed version in DB
-  • NOTE: In production, send resetURL via email — never expose it in the response
 */
 exports.forgotPassword = asyncHandler(async (req, res) => {
   const { email } = req.body;
@@ -279,19 +267,15 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
 
   const resetURL = `${process.env.CLIENT_URL || "http://localhost:3000"}/reset-password/${resetToken}`;
 
-  // TODO: Send resetURL via email (e.g. using Nodemailer/Resend)
-  // For dev only — remove before production
   return res.status(200).json({
     status: "success",
     message: "Reset token generated. Send this via email in production.",
-    resetURL,
+    ...(process.env.NODE_ENV === "development" && { resetURL }),
   });
 });
 
 /*
 RESET PASSWORD
-  • Verifies token
-  • Updates password and clears reset fields
 */
 exports.resetPassword = asyncHandler(async (req, res) => {
   const { token } = req.params;
@@ -315,11 +299,15 @@ exports.resetPassword = asyncHandler(async (req, res) => {
   user.password = password;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
+  // FIX: invalidate all active sessions after password reset
+  user.refreshToken = null;
 
-  await user.save(); // triggers pre-save hash hook
+  await user.save(); // triggers pre-save hash
+
+  res.clearCookie("refreshToken");
 
   return res.status(200).json({
     status: "success",
-    message: "Password reset successfully",
+    message: "Password reset successfully. Please login again.",
   });
 });
