@@ -26,6 +26,13 @@ app.use(cookieParser());
 
 // Routes
 app.use("/api/auth", authRoutes);
+// Root route (health check)
+app.get("/", (req, res) => {
+  res.json({
+    status: "success",
+    message: "Auth Service API is running",
+  });
+});
 
 // 404 fallback
 app.use((req, res, next) => {
